@@ -3,6 +3,10 @@ name = "accountsdb-microbench"
 version = "0.1.0"
 edition = "2021"
 
+#[[bench]]
+#name = "snapshot_load"
+#harness = false
+
 [profile.release]
 debug = true
 
@@ -11,7 +15,20 @@ linker = "lld"
 rustflags = ["-Clink-arg=-fuse-ld=lld", "-Clink-arg=-Wl,--no-rosegment"]
 
 [dependencies]
-dashmap = "6.0.1"
-memmap2 = "0.9.4"
-solana-accounts-db = { git = "https://github.com/Lou-Kamades/solana.git", branch = "lou/public-accounts-db", features = ["dev-context-only-utils"] }
-solana-sdk = { git = "https://github.com/Lou-Kamades/solana.git", branch = "lou/public-accounts-db", features = ["dev-context-only-utils"] }
+anyhow = "1.0.86"
+crossbeam-channel = "0.5.13"
+num_cpus = "1.16.0"
+
+solana-accounts-db = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench", features = ["dev-context-only-utils"] }
+solana-measure = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+solana-runtime = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+solana-sdk = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench", features = ["dev-context-only-utils"] }
+
+[patch.crates-io]
+solana-curve25519 = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+solana-program = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+solana-zk-sdk = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+solana-zk-token-sdk = { git = "https://github.com/Lou-Kamades/agave.git", branch = "lou/accounts-db-microbench" }
+
+[dev-dependencies]
+criterion = "0.3"
