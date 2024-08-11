@@ -11,13 +11,14 @@ edition = "2021"
 debug = true
 
 [target.x86_64-unknown-linux-gnu]
-linker = "lld"
+linker = "/usr/bin/clang"
 rustflags = ["-Clink-arg=-fuse-ld=lld", "-Clink-arg=-Wl,--no-rosegment"]
 
 [dependencies]
 anyhow = "1.0.86"
 clap = { version = "4.5.11", features = ["derive"] }
 crossbeam-channel = "0.5.13"
+nix = "0.26.2"
 num_cpus = "1.16.0"
 rand = "0.8.5"
 

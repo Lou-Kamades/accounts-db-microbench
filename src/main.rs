@@ -5,19 +5,28 @@ use solana_sdk::account::AccountSharedData;
 use solana_sdk::genesis_config::ClusterType;
 use solana_sdk::pubkey::Pubkey;
 use solana_accounts_db::accounts_db::AccountsDb;
-use solana_accounts_db::accounts_file::ALIGN_BOUNDARY_OFFSET;
 use solana_accounts_db::accounts_index::IndexLimitMb;
-use solana_accounts_db::accounts_index_storage::Startup;
 use solana_accounts_db::ancestors::Ancestors;
 use solana_accounts_db::accounts_db::AccountShrinkThreshold;
-use solana_accounts_db::u64_align;
 use rand::distributions::{Distribution, Uniform};
 use rand::Rng;
+use rand::seq::SliceRandom;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::{fork, ForkResult, Pid};
 
+use std::fs::File;
+use std::io::Write;
 use std::fmt::Result;
 use std::sync::Arc;
+use std::time::Duration;
+use std::process::Command;
 use clap::{Parser, ValueEnum};
+use crate::old::MemoryLocation;
+use crate::old::SyndicaBenchmark;
 
+pub mod old;
+
+#[derive(Clone)]
 enum Action {
     Read(Pubkey),
     Write((u64, Pubkey, AccountSharedData))
@@ -40,17 +49,77 @@ pub struct Benchmark {
     #[arg(long, short)]
     /// Ratio of reads to writes during the benchmark. Should be between 0 and 1
     read_write_ratio: f64,
+
+    #[arg(long, short)]
+    /// How many times the read/write loop should be run
+    benchmark_runs: usize,
 }
 
 pub fn main() -> Result {
-    let benchmark = Benchmark::parse();
-    println!("Benchmark configuration: {:?}", benchmark);
-    run_benchmark(benchmark)?;
+    // let benchmark = Benchmark::parse();
+    // println!("Benchmark configuration: {:?}", benchmark);
+    // run_benchmark(benchmark)?;
+
+    let variety = vec![
+        // SyndicaBenchmark { 
+        //     n_accounts: 10_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Ram,
+        //     index: MemoryLocation::Ram,
+        //     n_accounts_multiple: 0,
+        // },
+        // SyndicaBenchmark { 
+        //     n_accounts: 10_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Ram,
+        //     index: MemoryLocation::Disk,
+        //     n_accounts_multiple: 0,
+        // },
+        SyndicaBenchmark { 
+            n_accounts: 100_000,
+            slot_list_len: 1,
+            accounts: MemoryLocation::Ram,
+            index: MemoryLocation::Ram,
+            n_accounts_multiple: 0,
+        },
+        // SyndicaBenchmark { 
+        //     n_accounts: 100_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Ram,
+        //     index: MemoryLocation::Disk,
+        //     n_accounts_multiple: 0,
+        // },
+        // SyndicaBenchmark { 
+        //     n_accounts: 1_000_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Ram,
+        //     index: MemoryLocation::Ram,
+        //     n_accounts_multiple: 0,
+        // },
+        // SyndicaBenchmark { 
+        //     n_accounts: 1_000_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Ram,
+        //     index: MemoryLocation::Disk,
+        //     n_accounts_multiple: 0,
+        // },
+    ];
+
+    for benchmark in variety {
+        for _ in 0..20 {
+            match benchmark.accounts {
+                MemoryLocation::Ram => old::run_accounts_ram_benchmark(benchmark).unwrap(),
+                MemoryLocation::Disk => old::run_accounts_disk_benchmark(benchmark).unwrap(),
+            }
+        }
+        ;
+        println!("---");
+    }
     return Ok(());
 }
 
 pub fn run_benchmark(benchmark: Benchmark) -> Result {
-    println!("benchmark {:?}", benchmark);
+    let total_timer = std::time::Instant::now();
     let mut config = ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS;
     config.index.as_mut().unwrap().index_limit_mb = IndexLimitMb::InMemOnly;
 
@@ -86,12 +155,8 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
                     AccountSharedData::default().owner()
                 )
             );
-
-            total_size += account_size;
-            total_size = u64_align!(total_size);
         }
     }
-    let total_size_u64 = total_size as u64;
 
     // insert initial accounts
     for s in 0..num_slots {
@@ -128,23 +193,63 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
         };
     }
 
-    // run benchmark
-    let timer = std::time::Instant::now();
-    for action in actions {
-        match action {
-            Action::Read(key) => {
-                let (account, _) = accounts_db.load_without_fixed_root(&ancestors, &key).unwrap();
-                assert!(account.data().len() != 0);
-            },
-            Action::Write((s, key, data)) => {
-                accounts_db.store_for_tests(s, &[(&key, &data)]);
-                
-            },
-        }
+    // TODO: average etc
+    for i in 0..benchmark.benchmark_runs {
+        let mut trial_actions = actions.clone();
+        trial_actions.shuffle(&mut rng);
+        let elapsed = run_benchmark_inner(&accounts_db, trial_actions, &ancestors);
+        println!("Elapsed: {}, reads: {}, writes: {} ", elapsed.as_secs_f64(), num_reads, num_writes);
     }
-    let elapsed = timer.elapsed();
-    println!("Elapsed: {}, reads: {}, writes: {} ", elapsed.as_secs_f64(), num_reads, num_writes);
+    
+    let total_elapsed = total_timer.elapsed();
+    println!("Total time: {}", total_elapsed.as_secs_f64());
 
     return Ok(());
+}
+
+#[inline(never)]
+fn run_benchmark_inner(accounts_db: &AccountsDb, actions: Vec<Action>, ancestors: &Ancestors) -> Duration {
+    let timer = std::time::Instant::now();
+    match unsafe { fork() } {
+        Ok(ForkResult::Parent { child }) => {
+
+            println!("Parent process: child pid is {}", child);
+            // Main program 
+            for action in actions {
+                match action {
+                    Action::Read(key) => {
+                        let (account, _) = accounts_db.load_without_fixed_root(ancestors, &key).unwrap();
+                        assert!(account.data().len() != 0);
+                    },
+                    Action::Write((s, key, data)) => {
+                        accounts_db.store_for_tests(s, &[(&key, &data)]);
+                        
+                    },
+                }
+            }
+
+            // Signal the child to finish
+            signal::kill(child, Signal::SIGTERM).unwrap();
+
+            // Wait for child to finish
+            nix::sys::wait::waitpid(child, None).unwrap();
+        }
+        Ok(ForkResult::Child) => {
+            println!("Child process: running perf stat");
+            
+            let parent_pid = nix::unistd::getppid();
+            let perf_command = format!("perf stat -p {}", parent_pid);
+            
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(&perf_command)
+                .output().unwrap();
+
+            let mut file = File::create("perf_output.txt").unwrap();
+            file.write_all(&output.stderr).unwrap();
+        }
+        Err(err) => println!("Fork failed: {}", err),
+    }
+    timer.elapsed()
 }
 
