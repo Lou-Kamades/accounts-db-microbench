@@ -2,48 +2,21 @@
 
 use solana_accounts_db::accounts_db::AccountsDb;
 use solana_accounts_db::accounts_db::ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS;
-use solana_accounts_db::accounts_db::StorageSizeAndCount;
-use solana_accounts_db::accounts_file::AccountsFile;
 use solana_accounts_db::ancestors::Ancestors;
-use solana_accounts_db::ancient_append_vecs::AccountsToStore;
 use solana_sdk::rent_collector::RentCollector;
-use solana_sdk::account;
-use solana_sdk::account::Account;
 use solana_sdk::account::AccountSharedData;
-use solana_sdk::account::WritableAccount;
 use solana_sdk::genesis_config::ClusterType;
 use solana_accounts_db::accounts_db::AccountShrinkThreshold;
-use std::borrow::Borrow;
-use std::borrow::BorrowMut;
 use std::fmt::Result;
 use std::sync::Arc;
 use solana_sdk::account::ReadableAccount;
-use solana_sdk::pubkey::Pubkey;
 use solana_accounts_db::u64_align;
-use std::fs::OpenOptions;
-use std::io::SeekFrom;
 use solana_accounts_db::accounts_file::ALIGN_BOUNDARY_OFFSET;
 
-use std::io::Seek;
-use std::io::Write;
-use memmap2::MmapMut;
-
-use solana_accounts_db::append_vec::AppendVec;
-use solana_accounts_db::accounts_db::AccountStorageEntry;
-
-use solana_accounts_db::accounts_hash::AccountHash;
-use solana_accounts_db::account_storage::meta::StoredMeta;
-use solana_accounts_db::account_storage::meta::StorableAccountsWithHashesAndWriteVersions;
-use solana_accounts_db::account_storage::meta::StoredAccountInfo;
-use solana_sdk::slot_history::Slot;
-use solana_sdk::hash::Hash;
 
 use solana_accounts_db::accounts_db::StorageSizeAndCountMap;
 use solana_accounts_db::accounts_index_storage::Startup;
 use solana_accounts_db::accounts_index::IndexLimitMb;
-
-
-use dashmap::mapref::entry::Entry;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemoryLocation {
@@ -52,7 +25,7 @@ enum MemoryLocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Benchmark { 
+pub struct Benchmark { 
     n_accounts: usize,
     slot_list_len: usize,
     accounts: MemoryLocation,
@@ -63,7 +36,7 @@ struct Benchmark {
 pub fn run_benchmark(benchmark: Benchmark) -> Result {
     println!("benchmark {:?}", benchmark);
     let mut config = ACCOUNTS_DB_CONFIG_FOR_BENCHMARKS;
-    if (benchmark.index == MemoryLocation::Ram) {
+    if benchmark.index == MemoryLocation::Ram {
         // use RAM indexes 
         config.index.as_mut().unwrap().index_limit_mb = IndexLimitMb::InMemOnly;
     } else { 
@@ -83,13 +56,13 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
         Arc::default(),
     );
     let mut pubkeys = vec![];
-    for i in 0..n_accounts { 
+    for _ in 0..n_accounts { 
         pubkeys.push(solana_sdk::pubkey::new_rand());
     }
 
     let mut slots_used = 0;
-    let total_n_accounts = slot_list_len * n_accounts;
-    if (benchmark.accounts == MemoryLocation::Disk) {
+    // let total_n_accounts = slot_list_len * n_accounts;
+    if benchmark.accounts == MemoryLocation::Disk {
         let static_account_size = 136;
         let mut total_size = 0;
         for i in 0..n_accounts {
@@ -101,20 +74,16 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
         for s in 0..(slot_list_len + benchmark.n_accounts_multiple) { 
             let storage = accounts_db.create_and_insert_store(s as u64, total_size_u64, "blah");
             for i in 0..n_accounts {
-                let mut account = AccountSharedData::new(
+                let account = AccountSharedData::new(
                     10, 
                     i % 1_000, 
                     AccountSharedData::default().owner()
                 );
 
-                let hashes = vec![AccountHash(Hash::default()); 1];
-                let write_version = vec![0; 1];
+                let account_inner = &[(&pubkeys[i % n_accounts], &account)][..];
+                let accounts = (s as u64, account_inner);
                 storage.accounts.append_accounts(
-                    &StorableAccountsWithHashesAndWriteVersions::new_with_hashes_and_write_versions(
-                        &(s as u64, &[(&pubkeys[i % n_accounts], &account)][..]),
-                        hashes,
-                        write_version,
-                    ),
+                    &accounts,
                     0,
                 );
             }
@@ -169,9 +138,9 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
         let mut accounts = vec![];
         let mut refs = vec![];
 
-        for s in 0..(slot_list_len + benchmark.n_accounts_multiple) {
+        for _ in 0..(slot_list_len + benchmark.n_accounts_multiple) {
             for i in 0..n_accounts { 
-                let mut account = AccountSharedData::new(
+                let account = AccountSharedData::new(
                     10, 
                     i % 1000, 
                     AccountSharedData::default().owner()
@@ -188,7 +157,7 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
         for i in 0..(n_accounts * benchmark.n_accounts_multiple) {
             no_bench_refs.push((&pubkeys[i % n_accounts], &accounts[i]));
         }
-        if (no_bench_refs.len() > 0) { 
+        if no_bench_refs.len() > 0 { 
             accounts_db.store_for_tests(0 as u64, &no_bench_refs);
             slot += 1;
         } 
@@ -213,7 +182,7 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
     }
 
     let mut slots = vec![];
-    for (slot) in 0..slots_used {
+    for slot in 0..slots_used {
         slots.push(slot as u64); 
     }
     let ancestors = Ancestors::from(slots);
@@ -231,16 +200,37 @@ pub fn run_benchmark(benchmark: Benchmark) -> Result {
 
 pub fn main() -> Result { 
     let benches = vec![
+        // Benchmark { 
+        //     n_accounts: 1_000_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Disk,
+        //     index: MemoryLocation::Ram,
+        //     n_accounts_multiple: 0,
+        // },
         Benchmark { 
-            n_accounts: 100_000,
+            n_accounts: 1_000_000,
             slot_list_len: 1,
-            accounts: MemoryLocation::Ram,
-            index: MemoryLocation::Ram,
+            accounts: MemoryLocation::Disk,
+            index: MemoryLocation::Disk,
             n_accounts_multiple: 0,
         },
+        // Benchmark { 
+        //     n_accounts: 5_000_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Disk,
+        //     index: MemoryLocation::Ram,
+        //     n_accounts_multiple: 0,
+        // },
+        // Benchmark { 
+        //     n_accounts: 5_000_000,
+        //     slot_list_len: 1,
+        //     accounts: MemoryLocation::Disk,
+        //     index: MemoryLocation::Disk,
+        //     n_accounts_multiple: 0,
+        // },
     ];
 
-    for (benchmark) in benches {
+    for benchmark in benches {
         run_benchmark(benchmark)?;
         println!("---");
     }
